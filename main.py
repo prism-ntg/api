@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from pydantic import BaseModel
+from fastapi.responses import FileResponse
 
 from database import get_db
 
@@ -113,7 +114,22 @@ def predict_batch(req: BatchPredictRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/report/{filename}", tags=["Report"])
+def get_report(filename: str):
+    return FileResponse(path=f"./reports/{filename}", media_type="application/pdf")
 
+class ChatRequest(BaseModel):
+    pertanyaan: str
+
+@app.post("/chat", tags=["AI Chat Bot"])
+def chat(request: ChatRequest, db: Session = Depends(get_db), baseurl: str = "http://localhost:8000"):
+    try:
+        from nlp import process_nlp_report
+        result = process_nlp_report(request.pertanyaan, db, baseurl)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.get("/get-all-users", tags=["Database"])
 def get_all_users(db: Session = Depends(get_db)):
     try:

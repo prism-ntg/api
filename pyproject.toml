@@ -7,4 +7,11 @@ dependencies = [
     "sqlalchemy>=2.0.35",
     "pymysql>=1.1.1",
     "python-dotenv>=1.0.1",
+    "joblib",
+    "numpy",
+    "pandas",
+    "scikit-learn==1.6.1",
+    "nltk",
+    "groq",
+    "fpdf2"
 ]
