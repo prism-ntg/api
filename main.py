@@ -34,6 +34,7 @@ app.add_middleware(
 
 
 class AssetFeatures(BaseModel):
+    id_aset: str = ""  # pass-through identifier, excluded from model input
     Kekritisan_Score: int
     Avg_Maintenance_Delay: float
     Max_Maintenance_Delay: float
@@ -80,11 +81,11 @@ def health(db: Session = Depends(get_db)):
 @app.post("/predict", tags=["Prediksi"])
 def predict(features: AssetFeatures):
     try:
-        df = pd.DataFrame([features.model_dump()])
+        df = pd.DataFrame([features.model_dump(exclude={"id_aset"})])
         df = df[fitur_model]
         pred_encoded = rf_model.predict(df)
         label = label_encoder.inverse_transform(pred_encoded)[0]
-        return {"status": "success", "rekomendasi_jadwal": label}
+        return {"id_aset": features.id_aset, "status": "success", "rekomendasi_jadwal": label}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -94,14 +95,16 @@ def predict_batch(req: BatchPredictRequest):
     if not req.data:
         raise HTTPException(status_code=400, detail="Data tidak boleh kosong")
     try:
+        df_all = pd.DataFrame([item.model_dump(exclude={"id_aset"}) for item in req.data])
+        df_all = df_all[fitur_model]
+        pred_encoded = rf_model.predict(df_all)
+        probas = rf_model.predict_proba(df_all)
+        labels = label_encoder.inverse_transform(pred_encoded)
+
         hasil = []
-        for item in req.data:
-            df = pd.DataFrame([item.model_dump()])
-            df = df[fitur_model]
-            pred_encoded = rf_model.predict(df)
-            proba = rf_model.predict_proba(df)[0]
-            label = label_encoder.inverse_transform(pred_encoded)[0]
+        for item, label, proba in zip(req.data, labels, probas):
             hasil.append({
+                "id_aset": item.id_aset,
                 "status": "success",
                 "rekomendasi_jadwal": label,
                 "probabilitas": {
