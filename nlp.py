@@ -49,7 +49,8 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
     try:
         print("[INFO] Melakukan klasifikasi intent menggunakan LLM...")
         val_completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            # model=llama-3.3-70b-versatile,
             messages=[
                 {"role": "system", "content": validasi_prompt},
                 {"role": "user", "content": pertanyaan}
@@ -94,7 +95,33 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
         
     query_sync = text(sql_script_sync)
     result_sync = db.execute(query_sync)
-    data_sync = [dict(row._mapping) for row in result_sync.fetchall()]
+    data_sync_raw = [dict(row._mapping) for row in result_sync.fetchall()]
+    
+    grouped_assets = {}
+    for row in data_sync_raw:
+        asset_id = str(row['id_aset'])
+        if asset_id not in grouped_assets:
+            grouped_assets[asset_id] = {
+                'id_aset': asset_id,
+                'kategori': row.get('kategori', '-'),
+                'sub_kategori': row.get('sub_kategori', '-'),
+                'tipe': row.get('tipe', '-'),
+                'merek': row.get('merek', '-'),
+                'lokasi_gedung': row.get('lokasi_gedung', '-'),
+                'lokasi_lantai': row.get('lokasi_lantai', '-'),
+                'lokasi_zona': row.get('lokasi_zona', '-'),
+                'tgl_instalasi': row.get('tgl_instalasi', '-'),
+                'komplain': set(),
+                'penggantian': set()
+            }
+        
+        if row.get('nama_komplain'):
+            grouped_assets[asset_id]['komplain'].add(f"{row.get('nama_komplain')} (Rusak: {row.get('jenis_kerusakan')}, Sev: {row.get('severity')})")
+            
+        if row.get('tanggal_penggantian'):
+            grouped_assets[asset_id]['penggantian'].add(f"{row.get('tanggal_penggantian')} (Alasan: {row.get('alasan_penggantian')})")
+
+    data_sync = list(grouped_assets.values())
     total_data = len(data_sync)
     
     if total_data == 0:
@@ -110,7 +137,7 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
     jumlah_vektor_sekarang = collection.count()
 
     if jumlah_vektor_sekarang < total_data:
-        print(f"[INFO] Terdeteksi perubahan data. Memproses {total_data - jumlah_vektor_sekarang} dokumen untuk Vector DB...")
+        print(f"[INFO] Terdeteksi perubahan data. Memproses {total_data - jumlah_vektor_sekarang} dokumen unik untuk Vector DB...")
         batch_size = 250
         documents = []
         metadatas = []
@@ -121,17 +148,20 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
         
         for index, aset in enumerate(data_baru):
             index_asli = jumlah_vektor_sekarang + index
+            
+            komplain_str = "; ".join(aset['komplain']) if aset['komplain'] else "-"
+            penggantian_str = "; ".join(aset['penggantian']) if aset['penggantian'] else "-"
+            
             teks_dokumen = (
                 f"ID Aset: {aset.get('id_aset', '-')}. "
                 f"Kategori: {aset.get('kategori', '-')}, Sub Kategori: {aset.get('sub_kategori', '-')}, Tipe: {aset.get('tipe', '-')}, Merek: {aset.get('merek', '-')}. "
-                f"Komplain: {aset.get('nama_komplain', '-')}, Jenis Kerusakan: {aset.get('jenis_kerusakan', '-')}, Severity: {aset.get('severity', '-')}, Penyebab: {aset.get('penyebab', '-')}. "
-                f"Teknisi: {aset.get('teknisi_pelaksana', '-')}, Biaya: {aset.get('biaya_perbaikan', '-')}. "
                 f"Lokasi: Gedung {aset.get('lokasi_gedung', '-')}, Lantai {aset.get('lokasi_lantai', '-')}, Zona {aset.get('lokasi_zona', '-')}. "
-                f"Tanggal Perencanaan: {aset.get('tanggal_perencanaan', '-')}, Tanggal Pengerjaan: {aset.get('tanggal_pengerjaan', '-')}, Tanggal Selesai: {aset.get('tanggal_selesai', '-')}, Tgl Instalasi: {aset.get('tgl_instalasi', '-')}. "
-                f"Tanggal Penggantian: {aset.get('tanggal_penggantian', '-')}, Alasan Penggantian: {aset.get('alasan_penggantian', '-')}"
+                f"Tgl Instalasi: {aset.get('tgl_instalasi', '-')}. "
+                f"Riwayat Komplain: {komplain_str}. "
+                f"Riwayat Penggantian: {penggantian_str}."
             )
             documents.append(teks_dokumen)
-            metadatas.append({"id_aset": str(aset.get('id_aset', index_asli))})
+            metadatas.append({"id_aset": aset.get('id_aset', str(index_asli))})
             ids.append(f"id_{index_asli}")
             
             if (index + 1) % batch_size == 0 or (index + 1) == total_baru:
@@ -159,31 +189,20 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
             matched_ids = list(dict.fromkeys(matched_ids))
             id_list_str = ", ".join([f"'{id}'" for id in matched_ids])
             
-            if intent == "ASET_MASTER":
-                print("[INFO] Intent ASET_MASTER terdeteksi. Mengekstraksi data master tunggal.")
-                query_matched = text(f"""
-                    SELECT 
-                        ma.id_aset, ma.kategori, ma.sub_kategori, ma.tipe, ma.merek, 
-                        ma.lokasi_gedung, ma.lokasi_lantai, ma.lokasi_zona, ma.tgl_instalasi
-                    FROM master_aset ma
-                    WHERE ma.id_aset IN ({id_list_str})
-                    ORDER BY ma.id_aset ASC
-                """)
-            else:
-                print("[INFO] Intent KOMPLAIN_HISTORI terdeteksi. Mengekstraksi riwayat komplain lengkap.")
-                query_matched = text(f"""
-                    SELECT 
-                        ma.id_aset, ak.id as id_komplain, ak.nama as nama_komplain, ak.tanggal_perencanaan, ak.tanggal_pengerjaan, 
-                        ak.tanggal_selesai, ak.jenis_kerusakan, ak.severity, ak.penyebab, 
-                        ak.biaya_perbaikan, ak.spare_part_digunakan, ak.teknisi_pelaksana,
-                        ma.kategori, ma.sub_kategori, ma.tipe, ma.merek, ma.lokasi_gedung, ma.lokasi_lantai, ma.lokasi_zona, ma.tgl_instalasi,
-                        rp.tanggal_penggantian, rp.alasan_penggantian
-                    FROM master_aset ma
-                    JOIN aset_komplain ak ON ma.id_aset = ak.id_aset
-                    LEFT JOIN riwayat_penggantian_aset rp ON ma.id_aset = rp.id_aset_lama
-                    WHERE ma.id_aset IN ({id_list_str})
-                    ORDER BY ma.id_aset ASC, ak.id ASC
-                """)
+            print("[INFO] Mengekstraksi data aset dan riwayat komplain secara lengkap.")
+            query_matched = text(f"""
+                SELECT 
+                    ma.id_aset, ak.id as id_komplain, ak.nama as nama_komplain, ak.tanggal_perencanaan, ak.tanggal_pengerjaan, 
+                    ak.tanggal_selesai, ak.jenis_kerusakan, ak.severity, ak.penyebab, 
+                    ak.biaya_perbaikan, ak.spare_part_digunakan, ak.teknisi_pelaksana,
+                    ma.kategori, ma.sub_kategori, ma.tipe, ma.merek, ma.lokasi_gedung, ma.lokasi_lantai, ma.lokasi_zona, ma.tgl_instalasi,
+                    rp.tanggal_penggantian, rp.alasan_penggantian
+                FROM master_aset ma
+                LEFT JOIN aset_komplain ak ON ma.id_aset = ak.id_aset
+                LEFT JOIN riwayat_penggantian_aset rp ON ma.id_aset = rp.id_aset_lama
+                WHERE ma.id_aset IN ({id_list_str})
+                ORDER BY ma.id_aset ASC, ak.id ASC
+            """)
                 
             result_matched = db.execute(query_matched)
             data_terbatas = [dict(row._mapping) for row in result_matched.fetchall()]
@@ -200,7 +219,8 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
     prompt_user = f"Permintaan user: {pertanyaan}\nData Aset: {json.dumps(data_terbatas, default=str)}"
 
     completion = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        # model=llama-3.3-70b-versatile,
         messages=[
             {"role": "system", "content": prompt_sistem},
             {"role": "user", "content": prompt_user}
