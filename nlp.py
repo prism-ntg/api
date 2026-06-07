@@ -80,7 +80,51 @@ class PDF(FPDF):
 def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
     print(f"\n[DEBUG 1] Menerima input pertanyaan: '{pertanyaan}'")
     
-    query = text("SELECT m.*, p.tanggal_instalasi, p.target_frekuensi FROM main_data m JOIN predictions p ON m.id_aset = p.id_aset")
+    # Validasi Intent Pertanyaan
+    print("[DEBUG] Memvalidasi intent pertanyaan...")
+    validasi_prompt = (
+        "Anda adalah asisten validasi. Evaluasi pertanyaan user berikut. "
+        "Apakah pertanyaan ini jelas dan bermaksud untuk mencari, meminta laporan, "
+        "atau bertanya tentang data aset, komplain, perbaikan, kerusakan, teknisi, atau pemeliharaan? "
+        "Jika iya, jawab HANYA dengan kata 'VALID'. "
+        "Jika pertanyaannya tidak jelas, di luar konteks, tidak relevan, atau hanya sekadar sapaan, jawab HANYA dengan kata 'INVALID'."
+    )
+    
+    try:
+        val_completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": validasi_prompt},
+                {"role": "user", "content": pertanyaan}
+            ],
+            temperature=0.0,
+            max_completion_tokens=10,
+        )
+        val_result = val_completion.choices[0].message.content.strip().upper()
+        if "INVALID" in val_result:
+            print(f"[DEBUG] Pertanyaan ditolak. Hasil validasi: {val_result}")
+            return {
+                "status": "rejected",
+                "message": "Maaf, pertanyaan Anda kurang jelas atau di luar konteks. Silakan ajukan pertanyaan yang spesifik terkait laporan aset, komplain, perbaikan, atau pemeliharaan.",
+                "ai_response": "Saya hanya dapat membantu membuat laporan dan menjawab pertanyaan seputar data aset, komplain, dan pemeliharaan. Silakan perjelas permintaan Anda.",
+                "matched_data_count": 0,
+                "pdf_url": None
+            }
+    except Exception as e:
+        print(f"[DEBUG] Error saat validasi intent: {e}")
+        pass # Lanjut jika terjadi error API
+    
+    query = text("""
+        SELECT 
+            ak.id_aset, ak.nama as nama_komplain, ak.tanggal_perencanaan, ak.tanggal_pengerjaan, 
+            ak.tanggal_selesai, ak.jenis_kerusakan, ak.severity, ak.penyebab, 
+            ak.biaya_perbaikan, ak.spare_part_digunakan, ak.teknisi_pelaksana,
+            ma.kategori, ma.sub_kategori, ma.tipe, ma.merek, ma.lokasi_gedung, ma.lokasi_lantai, ma.lokasi_zona, ma.tgl_instalasi,
+            rp.tanggal_penggantian, rp.alasan_penggantian
+        FROM aset_komplain ak
+        JOIN master_aset ma ON ak.id_aset = ma.id_aset
+        LEFT JOIN riwayat_penggantian_aset rp ON ak.id_aset = rp.id_aset_lama
+    """)
     result = db.execute(query)
     data = [dict(row._mapping) for row in result.fetchall()]
     
@@ -95,7 +139,7 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
     teks_bersih = re.sub(r'\b(20\d{2})-(\d{2})-(\d{2})\b', '', teks_bersih) 
     for bulan in bulan_map.keys():
         teks_bersih = teks_bersih.replace(bulan, '')
-    teks_bersih = re.sub(r'\b(?:laporan|data|aset|tampilkan|berikan|buatkan|cari|carikan|tanggal|bulan|tahun|sampai|hingga|s/d|-|di|pada)\b', '', teks_bersih)
+    teks_bersih = re.sub(r'\b(?:laporan|data|aset|komplain|tampilkan|berikan|buatkan|cari|carikan|tanggal|bulan|tahun|sampai|hingga|s/d|-|di|pada)\b', '', teks_bersih)
     teks_bersih = re.sub(r'\b\d{1,2}\b', '', teks_bersih) 
     teks_bersih = re.sub(r'\b20\d{2}\b', '', teks_bersih) 
     
@@ -104,14 +148,42 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
     
     print(f"[DEBUG 4] Sisa kata kunci pencarian (Tokens): {filtered_tokens}")
     
+    target_date_field = "tanggal_perencanaan"
+    if date_filter:
+        print("[DEBUG] Menentukan target kolom tanggal berdasarkan intent...")
+        kolom_prompt = (
+            "Anda adalah asisten database. Berdasarkan pertanyaan user, tentukan kolom tanggal mana yang paling tepat untuk difilter.\n"
+            "Pilihan kolom:\n"
+            "- 'tanggal_perencanaan' (gunakan ini jika membahas komplain, masalah, perbaikan, teknisi, pemeliharaan, atau jika tidak spesifik)\n"
+            "- 'tgl_instalasi' (gunakan ini jika membahas instalasi aset, master aset)\n"
+            "- 'tanggal_penggantian' (gunakan ini jika secara spesifik membahas riwayat penggantian aset)\n"
+            "Jawab HANYA dengan nama kolom, tanpa tanda kutip atau penjelasan tambahan."
+        )
+        try:
+            kolom_completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": kolom_prompt},
+                    {"role": "user", "content": pertanyaan}
+                ],
+                temperature=0.0,
+                max_completion_tokens=10,
+            )
+            ai_kolom = kolom_completion.choices[0].message.content.strip().lower()
+            if ai_kolom in ["tanggal_perencanaan", "tgl_instalasi", "tanggal_penggantian"]:
+                target_date_field = ai_kolom
+            print(f"[DEBUG] Target kolom tanggal yang dipilih AI: {target_date_field}")
+        except Exception as e:
+            print(f"[DEBUG] Error saat menentukan kolom tanggal AI, menggunakan default: {e}")
+
     data_cocok = []
     
     if date_filter:
-        print("[DEBUG 5] Masuk ke proses filter berdasarkan WAKTU...")
+        print(f"[DEBUG 5] Masuk ke proses filter berdasarkan WAKTU (menggunakan kolom {target_date_field})...")
         for aset in data:
-            if 'tanggal_instalasi' in aset and aset['tanggal_instalasi']:
+            if target_date_field in aset and aset[target_date_field]:
                 try:
-                    tgl_str = str(aset['tanggal_instalasi']).split(' ')[0]
+                    tgl_str = str(aset[target_date_field]).split(' ')[0]
                     
                     if '-' in tgl_str and len(tgl_str.split('-')[0]) == 4:
                         date_obj = datetime.strptime(tgl_str, '%Y-%m-%d')
@@ -152,7 +224,7 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
                             if cocok_keyword:
                                 data_cocok.append(aset)
                 except Exception as e:
-                    print(f"[DEBUG 5] Error parsing tanggal {aset['tanggal_instalasi']}: {str(e)}")
+                    print(f"[DEBUG 5] Error parsing tanggal {aset.get(target_date_field)}: {str(e)}")
                     pass
     
     elif filtered_tokens:
@@ -228,7 +300,7 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
     
     if data_terbatas:
         pdf.set_font("Helvetica", '', 7)
-        headers = ["ID", "Kategori", "Sub Kat", "Tipe", "Kerusakan", "Severity", "Penyebab", "Biaya", "Spare Part", "Gedung", "Lantai", "Zona", "Tgl Instalasi", "Target Freq"]
+        headers = ["ID", "Kategori", "Merek", "Tgl Kerja", "Kerusakan", "Sev", "Biaya", "Teknisi", "Gedung", "Lantai", "Tgl Ganti", "Alasan Ganti"]
         
         from fpdf.fonts import FontFace
         headings_style = FontFace(emphasis="BOLD", color=0, fill_color=(200, 220, 255))
@@ -236,7 +308,7 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
         with pdf.table(
             borders_layout="ALL",
             align="CENTER",
-            col_widths=(10, 16, 17, 22, 22, 12, 20, 15, 22, 14, 10, 10, 16, 16),
+            col_widths=(10, 18, 20, 18, 26, 12, 18, 22, 16, 12, 18, 28),
             text_align="CENTER",
             headings_style=headings_style,
             line_height=6
@@ -249,23 +321,35 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
                 row = table.row()
                 row.cell(str(aset.get('id_aset', '-')))
                 row.cell(str(aset.get('kategori', '-')))
-                row.cell(str(aset.get('sub_kategori', '-')))
-                row.cell(str(aset.get('tipe', '-')))
+                row.cell(str(aset.get('merek', '-')))
+                
+                tgl_kerja = str(aset.get('tanggal_pengerjaan', '-'))
+                if tgl_kerja != '-' and tgl_kerja != 'None' and ' ' in tgl_kerja:
+                    tgl_kerja = tgl_kerja.split(' ')[0]
+                row.cell(tgl_kerja if tgl_kerja != 'None' else '-')
+                
                 row.cell(str(aset.get('jenis_kerusakan', '-')))
                 row.cell(str(aset.get('severity', '-')))
-                row.cell(str(aset.get('penyebab', '-')))
-                row.cell(str(aset.get('biaya_perbaikan', '-')))
-                row.cell(str(aset.get('spare_part_digunakan', '-')))
-                row.cell(str(aset.get('lokasi_gedung', '-')))
-                row.cell(str(aset.get('lokasi_lantai', '-')))
-                row.cell(str(aset.get('lokasi_zona', '-')))
                 
-                tgl = str(aset.get('tanggal_instalasi', '-'))
-                if tgl != '-' and ' ' in tgl:
-                    tgl = tgl.split(' ')[0]
-                row.cell(tgl)
+                biaya = str(aset.get('biaya_perbaikan', '-'))
+                row.cell(biaya if biaya != 'None' else '-')
                 
-                row.cell(str(aset.get('target_frekuensi', '-')))
+                teknisi = str(aset.get('teknisi_pelaksana', '-'))
+                row.cell(teknisi if teknisi != 'None' else '-')
+                
+                gedung = str(aset.get('lokasi_gedung', '-'))
+                row.cell(gedung if gedung != 'None' else '-')
+                
+                lantai = str(aset.get('lokasi_lantai', '-'))
+                row.cell(lantai if lantai != 'None' else '-')
+                
+                tgl_ganti = str(aset.get('tanggal_penggantian', '-'))
+                if tgl_ganti != '-' and tgl_ganti != 'None' and ' ' in tgl_ganti:
+                    tgl_ganti = tgl_ganti.split(' ')[0]
+                row.cell(tgl_ganti if tgl_ganti != 'None' else '-')
+                
+                alasan = str(aset.get('alasan_penggantian', '-'))
+                row.cell(alasan if alasan != 'None' else '-')
     else:
         pdf.set_font("Helvetica", 'I', 11)
         pdf.cell(0, 10, 'Tidak ada data aset yang sesuai dengan pencarian tersebut.', border=0, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
