@@ -1,0 +1,28 @@
+# Web Framework
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Data Validation
+pydantic
+
+# Database
+sqlalchemy
+pymysql
+
+# Environment
+python-dotenv
+
+# NLP & AI
+nltk
+groq
+chromadb
+
+# PDF Generation
+fpdf2
+
+# Machine Learning
+joblib
+numpy
+pandas
+scikit-learn
