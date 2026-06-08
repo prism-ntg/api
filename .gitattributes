@@ -1,1 +1,4 @@
 *.pkl filter=lfs diff=lfs merge=lfs -text
+vektor_db_aset/*.sqlite3 filter=lfs diff=lfs merge=lfs -text
+vektor_db_aset/**/*.bin filter=lfs diff=lfs merge=lfs -text
+vektor_db_aset/**/*.pickle filter=lfs diff=lfs merge=lfs -text
