@@ -1,3 +1,4 @@
 .env
 reports/*
 reports
+vektor_db_aset/
