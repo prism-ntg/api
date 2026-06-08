@@ -247,6 +247,17 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
         if relevant_ids:
             str_relevant_ids = [str(x) for x in relevant_ids]
             data_terbatas = [d for d in data_terbatas if str(d['id_aset']) in str_relevant_ids]
+            
+            # Remove duplicates for ASET_MASTER intent based on id_aset
+            if intent == "ASET_MASTER":
+                unique_data = []
+                seen_ids = set()
+                for d in data_terbatas:
+                    if str(d['id_aset']) not in seen_ids:
+                        unique_data.append(d)
+                        seen_ids.add(str(d['id_aset']))
+                data_terbatas = unique_data
+                
             used_ids = list(dict.fromkeys([str(d['id_aset']) for d in data_terbatas]))
         else:
             # Jika AI merasa tidak ada yang relevan sama sekali
