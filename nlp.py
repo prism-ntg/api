@@ -82,11 +82,12 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
             ma.id_aset, ak.nama as nama_komplain, ak.tanggal_perencanaan, ak.tanggal_pengerjaan, 
             ak.tanggal_selesai, ak.jenis_kerusakan, ak.severity, ak.penyebab, 
             ak.biaya_perbaikan, ak.spare_part_digunakan, ak.teknisi_pelaksana,
-            ma.kategori, ma.sub_kategori, ma.tipe, ma.merek, ma.lokasi_gedung, ma.lokasi_lantai, ma.lokasi_zona, ma.tgl_instalasi,
+            ma.kategori, ma.sub_kategori, ma.tipe, ma.merek, ma.lokasi_gedung, ma.lokasi_lantai, ma.lokasi_zona, ma.tgl_instalasi, ma.status_jadwal as klasifikasi,
             rp.tanggal_penggantian, rp.alasan_penggantian
         FROM master_aset ma
         LEFT JOIN aset_komplain ak ON ma.id_aset = ak.id_aset
         LEFT JOIN riwayat_penggantian_aset rp ON ma.id_aset = rp.id_aset_lama
+        WHERE ma.status = 'Aktif'
         ORDER BY ma.id_aset ASC
     """
     
@@ -111,6 +112,7 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
                 'lokasi_lantai': row.get('lokasi_lantai', '-'),
                 'lokasi_zona': row.get('lokasi_zona', '-'),
                 'tgl_instalasi': row.get('tgl_instalasi', '-'),
+                'klasifikasi': row.get('klasifikasi', '-'),
                 'komplain': set(),
                 'penggantian': set()
             }
@@ -154,6 +156,7 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
             
             teks_dokumen = (
                 f"ID Aset: {aset.get('id_aset', '-')}. "
+                f"Klasifikasi: {aset.get('klasifikasi', '-')}. "
                 f"Kategori: {aset.get('kategori', '-')}, Sub Kategori: {aset.get('sub_kategori', '-')}, Tipe: {aset.get('tipe', '-')}, Merek: {aset.get('merek', '-')}. "
                 f"Lokasi: Gedung {aset.get('lokasi_gedung', '-')}, Lantai {aset.get('lokasi_lantai', '-')}, Zona {aset.get('lokasi_zona', '-')}. "
                 f"Tgl Instalasi: {aset.get('tgl_instalasi', '-')}. "
@@ -195,7 +198,7 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
                     ma.id_aset, ak.id as id_komplain, ak.nama as nama_komplain, ak.tanggal_perencanaan, ak.tanggal_pengerjaan, 
                     ak.tanggal_selesai, ak.jenis_kerusakan, ak.severity, ak.penyebab, 
                     ak.biaya_perbaikan, ak.spare_part_digunakan, ak.teknisi_pelaksana,
-                    ma.kategori, ma.sub_kategori, ma.tipe, ma.merek, ma.lokasi_gedung, ma.lokasi_lantai, ma.lokasi_zona, ma.tgl_instalasi,
+                    ma.kategori, ma.sub_kategori, ma.tipe, ma.merek, ma.lokasi_gedung, ma.lokasi_lantai, ma.lokasi_zona, ma.tgl_instalasi, ma.status_jadwal as klasifikasi,
                     rp.tanggal_penggantian, rp.alasan_penggantian
                 FROM master_aset ma
                 LEFT JOIN aset_komplain ak ON ma.id_aset = ak.id_aset
@@ -210,11 +213,13 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
 
     print("[INFO] Menghasilkan ringkasan dan rekomendasi menggunakan LLM...")
     prompt_sistem = (
-        "Anda adalah AI Advisor di PT Nusa Tekno Global. Berikan saran dan kesimpulan singkat "
-        "(maksimal 2 paragraf) berdasarkan temuan data aset yang diberikan. "
-        "Fokus pada insight, tindakan pemeliharaan, atau rekomendasi perbaikan. "
-        "JANGAN buat tabel, poin-poin yang terlalu panjang, atau markdown, karena output ini "
-        "hanya akan dicetak sebagai teks paragraf di akhir laporan PDF."
+        "Anda adalah AI Advisor di PT Nusa Tekno Global. Tugas Anda mengevaluasi data dan memfilter mana yang paling relevan.\n"
+        "Keluarkan output WAJIB dalam format JSON yang berisi 2 key:\n"
+        "{\n"
+        "  \"relevant_ids\": [daftar ID aset (integer) yang BENAR-BENAR SESUAI dengan permintaan user],\n"
+        "  \"kesimpulan\": \"Saran singkat 1-2 paragraf berdasarkan temuan.\"\n"
+        "}\n"
+        "PENTING: Jika user meminta merek, kategori, atau klasifikasi tertentu, filter secara ketat pada key 'relevant_ids'! Jangan masukkan ID yang tidak sesuai."
     )
     prompt_user = f"Permintaan user: {pertanyaan}\nData Aset: {json.dumps(data_terbatas, default=str)}"
 
@@ -225,12 +230,31 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
             {"role": "system", "content": prompt_sistem},
             {"role": "user", "content": prompt_user}
         ],
-        temperature=0.5,
-        max_completion_tokens=512,
+        temperature=0.0,
+        max_completion_tokens=700,
+        response_format={"type": "json_object"},
         top_p=1,
     )
 
-    full_response = completion.choices[0].message.content or ""
+    full_response_raw = completion.choices[0].message.content or "{}"
+    
+    ai_kesimpulan = "Tidak ada kesimpulan yang dapat ditarik."
+    try:
+        parsed_response = json.loads(full_response_raw)
+        relevant_ids = parsed_response.get("relevant_ids", [])
+        ai_kesimpulan = parsed_response.get("kesimpulan", full_response_raw)
+        
+        if relevant_ids:
+            str_relevant_ids = [str(x) for x in relevant_ids]
+            data_terbatas = [d for d in data_terbatas if str(d['id_aset']) in str_relevant_ids]
+            used_ids = list(dict.fromkeys([str(d['id_aset']) for d in data_terbatas]))
+        else:
+            # Jika AI merasa tidak ada yang relevan sama sekali
+            data_terbatas = []
+            used_ids = []
+    except Exception as e:
+        print(f"[ERROR] Gagal parsing JSON LLM: {e}")
+        ai_kesimpulan = full_response_raw
 
     pdf = PDF(orientation="L")
     pdf.add_page()
@@ -245,11 +269,11 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
         pdf.set_font("Helvetica", '', 7)
         
         if intent == "ASET_MASTER":
-            headers = ["ID", "Kategori", "Merek", "Gedung", "Lantai"]
-            col_widths = (25, 60, 60, 50, 40)
+            headers = ["ID", "Klasifikasi", "Kategori", "Sub-Kategori", "Tipe", "Merek", "Gedung", "Lantai", "Zona", "Instalasi"]
+            col_widths = (12, 22, 35, 35, 35, 30, 35, 15, 25, 30)
         else:
-            headers = ["ID", "Kategori", "Merek", "Tgl Kerja", "Kerusakan", "Sev", "Biaya", "Teknisi", "Gedung", "Lantai", "Tgl Ganti", "Alasan Ganti"]
-            col_widths = (10, 18, 20, 18, 26, 12, 18, 22, 16, 12, 18, 28)
+            headers = ["ID", "Klas", "Kategori", "Merek", "Tgl Kerja", "Kerusakan", "Sev", "Biaya", "Teknisi", "Gedung", "Lantai", "Tgl Ganti", "Alasan Ganti"]
+            col_widths = (10, 15, 18, 20, 18, 24, 10, 16, 20, 16, 12, 16, 23)
             
         from fpdf.fonts import FontFace
         headings_style = FontFace(emphasis="BOLD", color=0, fill_color=(200, 220, 255))
@@ -273,19 +297,28 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
                 
                 if intent == "ASET_MASTER":
                     row.cell(current_id)
+                    row.cell(str(aset.get('klasifikasi', '-')))
                     row.cell(str(aset.get('kategori', '-')))
+                    row.cell(str(aset.get('sub_kategori', '-')))
+                    row.cell(str(aset.get('tipe', '-')))
                     row.cell(str(aset.get('merek', '-')))
                     gedung = str(aset.get('lokasi_gedung', '-'))
                     row.cell(gedung if gedung != 'None' else '-')
                     lantai = str(aset.get('lokasi_lantai', '-'))
                     row.cell(lantai if lantai != 'None' else '-')
+                    zona = str(aset.get('lokasi_zona', '-'))
+                    row.cell(zona if zona != 'None' else '-')
+                    tgl_inst = str(aset.get('tgl_instalasi', '-'))
+                    row.cell(tgl_inst if tgl_inst != 'None' else '-')
                 else:
                     if current_id == last_id:
                         row.cell("")
                         row.cell("")
                         row.cell("")
+                        row.cell("")
                     else:
                         row.cell(current_id)
+                        row.cell(str(aset.get('klasifikasi', '-')))
                         row.cell(str(aset.get('kategori', '-')))
                         row.cell(str(aset.get('merek', '-')))
                     
@@ -334,7 +367,7 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
     pdf.cell(0, 10, 'Saran & Kesimpulan:', border=0, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     
     pdf.set_font("Helvetica", '', 11)
-    cleaned_text = full_response.encode('latin-1', 'replace').decode('latin-1')
+    cleaned_text = ai_kesimpulan.encode('latin-1', 'replace').decode('latin-1')
     pdf.multi_cell(0, 6, cleaned_text)
     
     os.makedirs("reports", exist_ok=True)
@@ -348,7 +381,7 @@ def process_nlp_report(pertanyaan: str, db: Session, baseurl: str):
     return {
         "status": "success",
         "message": "Laporan berhasil di-generate.",
-        "ai_response": full_response,
+        "ai_response": ai_kesimpulan,
         "matched_data_count": len(data_terbatas),
         "pdf_url": baseurl + f"/report/{report_filename}",
         "asset_id": used_ids
