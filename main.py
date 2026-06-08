@@ -113,7 +113,11 @@ def predict_batch(req: BatchPredictRequest):
                 },
                 "confidence": round(float(np.max(proba)), 4),
             })
-        return {"total": len(hasil), "hasil": hasil}
+        
+        # Sortir berdasarkan confidence tertinggi dan ambil maksimal 15 teratas
+        hasil_sorted = sorted(hasil, key=lambda x: x['confidence'], reverse=True)[:15]
+        
+        return {"total_input": len(hasil), "total_output": len(hasil_sorted), "hasil": hasil_sorted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
