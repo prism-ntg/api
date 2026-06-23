@@ -129,7 +129,7 @@ class ChatRequest(BaseModel):
     pertanyaan: str
 
 @app.post("/chat", tags=["AI Chat Bot"])
-def chat(request: ChatRequest, db: Session = Depends(get_db), baseurl: str = "https://prism.pnj-digit.site"):
+def chat(request: ChatRequest, db: Session = Depends(get_db), baseurl: str = "https://api.prism.pnj-digit.site"):
     try:
         from nlp import process_nlp_report
         result = process_nlp_report(request.pertanyaan, db, baseurl)
