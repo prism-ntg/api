@@ -1,0 +1,37 @@
+name: Backend API Tests
+
+# Pipeline ini akan berjalan otomatis setiap kali kamu melakukan 'git push' ke branch main
+# atau saat kamu membuat Pull Request ke branch main.
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    # Meminjam komputer server (runner) milik GitHub dengan OS Ubuntu Linux
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. Server GitHub mendownload kodemu dari repository
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # 2. Server GitHub menginstal Python
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    # 3. Server GitHub menginstal 'uv' (karena kamu memakai uv, bukan pip biasa)
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    # 4. Menginstal semua dependencies (FastAPI, Pytest, dsb) dari uv.lock
+    - name: Install dependencies
+      run: uv sync
+
+    # 5. Menjalankan Sang Robot Test!
+    - name: Run Pytest
+      run: uv run pytest -v
