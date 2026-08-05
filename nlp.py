@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 nltk.download('stopwords', quiet=True)
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "dummy_key_for_testing_123")
 client = Groq(api_key=GROQ_API_KEY)
 
 try:
