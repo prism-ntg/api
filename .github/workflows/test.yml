@@ -34,4 +34,11 @@ jobs:
 
     # 5. Menjalankan Sang Robot Test!
     - name: Run Pytest
+      env:
+        DATABASE_TYPE: mysql
+        DATABASE_USER: dummy
+        DATABASE_PASSWORD: password
+        DATABASE_HOST: localhost
+        DATABASE_PORT: "3306"
+        DATABASE_NAME: testdb
       run: uv run pytest -v
