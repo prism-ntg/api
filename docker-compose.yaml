@@ -1,0 +1,32 @@
+services:
+  app:
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    container_name: prism-api
+    working_dir: /app
+    restart: always
+    command: sh -c "uv run fastapi dev main.py --host 0.0.0.0"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    networks:
+      - prismnetwork
+      - prism_shared_net
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: prism-tunnel
+    restart: always
+    command: tunnel --no-autoupdate run --token ${CF_TOKEN}
+    env_file:
+      - .env
+    networks:
+      - prismnetwork
+
+networks:
+  prismnetwork:
+    driver: bridge
+
+  prism_shared_net:
+    external: true
+    name: prism-fe_prism-network
