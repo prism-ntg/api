@@ -50,6 +50,9 @@ def test_predict_endpoint():
     assert data["id_aset"] == "TEST-ASET-01"
     assert "rekomendasi_jadwal" in data
 
+import pytest
+
+@pytest.mark.skip(reason="Test ini memanggil API Groq betulan. Di GitHub Actions akan gagal. Gunakan test_chat_mocked saja.")
 def test_chat_endpoint():
     """Mengetes fungsionalitas fitur Chat NLP"""
     payload = {
